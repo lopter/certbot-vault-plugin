@@ -6,7 +6,6 @@ import os
 import logging
 import hvac
 
-import zope.interface
 import OpenSSL.crypto
 
 from datetime import datetime
@@ -18,9 +17,7 @@ from certbot.plugins import common
 logger = logging.getLogger(__name__)
 
 
-@zope.interface.implementer(interfaces.IInstaller)
-@zope.interface.provider(interfaces.IPluginFactory)
-class VaultInstaller(common.Plugin):
+class VaultInstaller(common.Installer, interfaces.RenewDeployer):
     description = "Vault Cert Installer"
 
     @classmethod
@@ -59,7 +56,7 @@ class VaultInstaller(common.Plugin):
         )
         add("path",
             default=os.getenv('VAULT_PATH'),
-            help="Vault Mount Point"
+            help="Vault Path"
         )
 
     def __init__(self, *args, **kwargs):
@@ -189,3 +186,15 @@ class VaultInstaller(common.Plugin):
 
     def restart(self):  # pylint: disable=missing-docstring,no-self-use
         pass  # pragma: no cover
+
+    def renew_deploy(self, lineage, *args, **kwargs):  # pylint: disable=missing-docstring,no-self-use,unused-argument
+        """Renew certificates when calling `certbot renew`"""
+        self.deploy_cert(
+            lineage.names()[0],
+            lineage.cert_path,
+            lineage.key_path,
+            lineage.chain_path,
+            lineage.fullchain_path
+        )
+
+interfaces.RenewDeployer.register(VaultInstaller)
