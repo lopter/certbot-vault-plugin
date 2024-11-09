@@ -5,6 +5,8 @@ from __future__ import print_function
 import os
 import logging
 import hvac
+import requests
+import ssl
 
 import OpenSSL.crypto
 
@@ -50,6 +52,13 @@ class VaultInstaller(common.Installer, interfaces.RenewDeployer):
             default=os.getenv('VAULT_ADDR'),
             help="Vault URL"
         )
+        add("tls-server-name",
+            default=os.getenv("VAULT_TLS_SERVER_NAME"),
+            help=(
+                "Verify Vault's TLS certificate using this name "
+                "instead of the one specified in the Vault URL"
+            ),
+        )
         add("mount",
             default=os.getenv('VAULT_MOUNT'),
             help="Vault Mount Point"
@@ -61,7 +70,14 @@ class VaultInstaller(common.Installer, interfaces.RenewDeployer):
 
     def __init__(self, *args, **kwargs):
         super(VaultInstaller, self).__init__(*args, **kwargs)
-        self.hvac_client = hvac.Client(self.conf('addr'))
+        if vault_server_name := self.conf("tls-server-name"):
+            session = get_session_for_server_name(vault_server_name)
+        else:
+            session = requests.Session()
+        self.hvac_client = hvac.Client(
+            url=self.conf('addr'),
+            session=session,
+        )
 
         if self.conf('token'):
             self.hvac_client.token = self.conf('token')
@@ -198,3 +214,27 @@ class VaultInstaller(common.Installer, interfaces.RenewDeployer):
         )
 
 interfaces.RenewDeployer.register(VaultInstaller)
+
+
+def get_session_for_server_name(name: str) -> requests.Session:
+    tls_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    def sni_callback(socket, cert_name, tls_ctx):
+        if cert_name == name:
+            return None
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+    tls_ctx.sni_callback = sni_callback
+
+    s = requests.Session()
+    s.mount("https://", TLSAdapter(ssl_context=tls_ctx))
+    return s
+
+
+class TLSAdapter(requests.adapters.HTTPAdapter):
+
+    def __init__(self, ssl_context=None, *args, **kwargs):
+        self.ssl_context = ssl_context
+        super().__init__(*args, **kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["ssl_context"] = self.ssl_context
+        return super().init_poolmanager(*args, **kwargs)
