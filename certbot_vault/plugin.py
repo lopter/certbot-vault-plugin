@@ -3,10 +3,10 @@
 from __future__ import print_function
 
 import os
-import logging
 import hvac
+import logging
 import requests
-import ssl
+import requests.adapters
 
 import OpenSSL.crypto
 
@@ -14,6 +14,7 @@ from datetime import datetime
 from certbot import interfaces
 from certbot import errors
 from certbot.plugins import common
+from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,10 @@ class VaultInstaller(common.Installer, interfaces.RenewDeployer):
                 "instead of the one specified in the Vault URL"
             ),
         )
+        add("tls-cacert",
+            default=os.getenv("VAULT_CACERT"),
+            help="Path to the CA certificate for vault",
+        )
         add("mount",
             default=os.getenv('VAULT_MOUNT'),
             help="Vault Mount Point"
@@ -70,8 +75,12 @@ class VaultInstaller(common.Installer, interfaces.RenewDeployer):
 
     def __init__(self, *args, **kwargs):
         super(VaultInstaller, self).__init__(*args, **kwargs)
-        if vault_server_name := self.conf("tls-server-name"):
-            session = get_session_for_server_name(vault_server_name)
+        if tls_cacert := self.conf("tls-cacert"):
+            ca_certs = Path(tls_cacert)
+        else:
+            ca_certs = None
+        if server_name := self.conf("tls-server-name"):
+            session = get_session_for_server_name(server_name, ca_certs)
         else:
             session = requests.Session()
         self.hvac_client = hvac.Client(
@@ -216,25 +225,21 @@ class VaultInstaller(common.Installer, interfaces.RenewDeployer):
 interfaces.RenewDeployer.register(VaultInstaller)
 
 
-def get_session_for_server_name(name: str) -> requests.Session:
-    tls_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-    def sni_callback(socket, cert_name, tls_ctx):
-        if cert_name == name:
-            return None
-        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
-    tls_ctx.sni_callback = sni_callback
-
+def get_session_for_server_name(name: str, ca_certs: Path | None) -> requests.Session:
     s = requests.Session()
-    s.mount("https://", TLSAdapter(ssl_context=tls_ctx))
+    s.mount("https://", SNIAdapter(name, ca_certs))
     return s
 
 
-class TLSAdapter(requests.adapters.HTTPAdapter):
+class SNIAdapter(requests.adapters.HTTPAdapter):
 
-    def __init__(self, ssl_context=None, *args, **kwargs):
-        self.ssl_context = ssl_context
+    def __init__(self, server_name: str, ca_certs: Path | None, *args, **kwargs):
+        self.server_name = server_name
+        self.ca_certs = ca_certs
         super().__init__(*args, **kwargs)
 
     def init_poolmanager(self, *args, **kwargs):
-        kwargs["ssl_context"] = self.ssl_context
+        kwargs["server_hostname"] = self.server_name
+        if self.ca_certs:
+            kwargs["ca_certs"] = str(self.ca_certs)
         return super().init_poolmanager(*args, **kwargs)
