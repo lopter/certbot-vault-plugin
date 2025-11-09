@@ -238,6 +238,14 @@ class SNIAdapter(requests.adapters.HTTPAdapter):
         self.ca_certs = ca_certs
         super().__init__(*args, **kwargs)
 
+    def cert_verify(self, conn, url, verify, cert):
+        # The implementation from `requests.adapters.HTTPAdapter` overrides
+        # ca_certs on the connection returned by the poolmanager for some
+        # reason. It seems to only apply for a situation with a (client) cert.
+        #
+        # I don't quite understand how it even worked before.
+        pass
+
     def init_poolmanager(self, *args, **kwargs):
         kwargs["server_hostname"] = self.server_name
         if self.ca_certs:
