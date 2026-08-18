@@ -1,19 +1,14 @@
 """Vault Let's Encrypt installer plugin."""
 
-from __future__ import print_function
-
 import os
 import hvac
 import logging
 import requests
 import requests.adapters
 
-import OpenSSL.crypto
-
-from datetime import datetime
-from certbot import interfaces
-from certbot import errors
+from certbot import interfaces, errors
 from certbot.plugins import common
+from cryptography import x509
 from pathlib import Path
 
 
@@ -141,36 +136,30 @@ class VaultInstaller(common.Installer, interfaces.RenewDeployer):
         :raises .PluginError: when cert cannot be deployed
         """
 
-        cert = open(cert_path).read()
+        cert_pem = Path(cert_path).read_bytes()
 
-        date_format = "%Y%m%d%H%M%SZ"
+        x509_cert = x509.load_pem_x509_certificate(cert_pem)
 
-        openssl_cert = OpenSSL.crypto.load_certificate(
-            OpenSSL.crypto.FILETYPE_PEM,
-            cert
-        )
-
-        data = {
+        data: dict[str, str | dict[str, int] | list[str]] = {
             'type': 'urn:scheme:type:certificate',
-            'cert': cert,
-            'key': open(key_path).read(),
-            'chain': open(fullchain_path).read(),
-            'serial': str(openssl_cert.get_serial_number()),
+            'cert': cert_pem.decode(),
+            'key': Path(key_path).read_text(),
+            'chain': Path(fullchain_path).read_text(),
+            'serial': str(x509_cert.serial_number),
             'life': {
-                'issued': int(datetime.strptime(openssl_cert.get_notBefore().decode(), date_format).timestamp()),
-                'expires': int(datetime.strptime(openssl_cert.get_notAfter().decode(), date_format).timestamp()),
+                'issued': int(x509_cert.not_valid_before_utc.timestamp()),
+                'expires': int(x509_cert.not_valid_after_utc.timestamp()),
             }
         }
 
-        domains = []
-        ext_count = openssl_cert.get_extension_count()
-        for i in range(0, ext_count):
-            ext = openssl_cert.get_extension(i)
-            if 'subjectAltName' in str(ext.get_short_name()):
-                sub = ext._subjectAltNameString()
-                for row in [x.strip() for x in sub.split(',')]:
-                    if row.startswith('DNS:'):
-                        domains.append(row[len('DNS:'):])
+        try:
+            san = x509_cert.extensions.get_extension_for_class(
+                x509.SubjectAlternativeName
+            )
+        except x509.ExtensionNotFound:
+            domains = []
+        else:
+            domains = san.value.get_values_for_type(x509.DNSName)
 
         if domains:
             data['domains'] = domains
